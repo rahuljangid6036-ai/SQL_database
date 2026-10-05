@@ -123,6 +123,64 @@ class RelationalDatabaseTests(unittest.TestCase):
         self.assertEqual(self.database.delete_student(1), 1)
         self.assertIsNone(self.database.get_student_by_id(1))
 
+    def test_successful_course_transfer_updates_student_and_history(self):
+        self.database.transfer_student_course(1, 3)
+
+        student = self.database.get_student_by_id(1)
+        history = self.database.get_student_course_history(1)
+        self.assertEqual(student.course_id, 3)
+        self.assertEqual(student.course_name, "MCA")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0][1:5], (1, "Rahul", "BCA", "MCA"))
+        self.assertEqual(self.database.get_course_history(), history)
+
+    def test_invalid_student_course_and_same_course_do_not_change_data(self):
+        initial_student = self.database.get_student_by_id(1)
+
+        with self.assertRaisesRegex(ValueError, "Student not found"):
+            self.database.transfer_student_course(999, 3)
+        with self.assertRaisesRegex(ValueError, "Invalid course ID"):
+            self.database.transfer_student_course(1, 99)
+        with self.assertRaisesRegex(ValueError, "already enrolled"):
+            self.database.transfer_student_course(1, 1)
+
+        self.assertEqual(self.database.get_student_by_id(1).course_id, initial_student.course_id)
+        self.assertEqual(self.database.get_course_history(), [])
+
+    def test_history_insert_failure_rolls_back_student_update(self):
+        self.database.connection.execute(
+            """
+            CREATE TRIGGER fail_course_history_insert
+            BEFORE INSERT ON student_course_history
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated history insert failure');
+            END
+            """
+        )
+        self.database.connection.commit()
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "simulated history insert failure"):
+            self.database.transfer_student_course(1, 3)
+
+        self.assertEqual(self.database.get_student_by_id(1).course_id, 1)
+        self.assertEqual(self.database.get_student_course_history(1), [])
+        self.assertFalse(self.database.connection.in_transaction)
+
+    def test_transaction_controls_commit_and_rollback(self):
+        self.database.begin_transaction()
+        self.database.connection.execute(
+            "UPDATE students SET course_id = 3 WHERE student_id = 1"
+        )
+        self.database.rollback()
+        self.assertEqual(self.database.get_student_by_id(1).course_id, 1)
+
+        self.database.begin_transaction()
+        self.database.connection.execute(
+            "UPDATE students SET course_id = 3 WHERE student_id = 1"
+        )
+        self.database.commit()
+        self.assertEqual(self.database.get_student_by_id(1).course_id, 3)
+
     def test_menu_rejects_unknown_course_without_adding_student(self):
         output = StringIO()
         with patch("builtins.input", side_effect=["99", "Invalid", "20", "99"]), redirect_stdout(output):
@@ -132,7 +190,7 @@ class RelationalDatabaseTests(unittest.TestCase):
 
     def test_menu_contains_all_required_options(self):
         output = StringIO()
-        with patch("builtins.input", return_value="15"), redirect_stdout(output):
+        with patch("builtins.input", return_value="17"), redirect_stdout(output):
             run_application(self.database)
         menu = output.getvalue()
         for option in (
@@ -150,7 +208,9 @@ class RelationalDatabaseTests(unittest.TestCase):
             "12. Student Statistics",
             "13. Course-wise Statistics",
             "14. Courses Without Students",
-            "15. Exit",
+            "15. Transfer Student Course",
+            "16. View Course Transfer History",
+            "17. Exit",
         ):
             self.assertIn(option, menu)
 

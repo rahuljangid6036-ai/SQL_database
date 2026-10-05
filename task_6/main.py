@@ -200,6 +200,50 @@ def show_courses_without_students(database):
         print(course.course_name)
 
 
+def transfer_student_course(database):
+    student_id = _read_integer("Student ID: ")
+    student = database.get_student_by_id(student_id)
+    if student is None:
+        print("Student not found.")
+        return
+
+    new_course_id = _read_integer("New course ID: ")
+    new_course = database.get_course_by_id(new_course_id)
+    if new_course is None:
+        print("Invalid course ID.")
+        return
+    if student.course_id == new_course_id:
+        print("Student is already enrolled in this course.")
+        return
+
+    database.transfer_student_course(student_id, new_course_id)
+    print(
+        f"{student.name} transferred from {student.course_name} "
+        f"to {new_course.course_name}."
+    )
+
+
+def show_course_transfer_history(database):
+    student_id_text = input("Student ID (press Enter for all history): ").strip()
+    if student_id_text:
+        try:
+            student_id = int(student_id_text)
+        except ValueError as error:
+            raise ValueError("Please enter a valid integer.") from error
+        history = database.get_student_course_history(student_id)
+    else:
+        history = database.get_course_history()
+
+    if not history:
+        print("No course transfer history found.")
+        return
+
+    print(f"{'Student':<20}{'Old Course':<16}{'New Course':<16}Changed At")
+    print("-" * 70)
+    for _, _, name, old_course, new_course, changed_at in history:
+        print(f"{name:<20}{old_course:<16}{new_course:<16}{changed_at}")
+
+
 def run_application(database):
     while True:
         print("\nUniversity Student Management System")
@@ -217,7 +261,9 @@ def run_application(database):
         print("12. Student Statistics")
         print("13. Course-wise Statistics")
         print("14. Courses Without Students")
-        print("15. Exit")
+        print("15. Transfer Student Course")
+        print("16. View Course Transfer History")
+        print("17. Exit")
         choice = input("Choose an option: ").strip()
 
         actions = {
@@ -235,19 +281,23 @@ def run_application(database):
             "12": show_student_statistics,
             "13": show_course_statistics,
             "14": show_courses_without_students,
+            "15": transfer_student_course,
+            "16": show_course_transfer_history,
         }
-        if choice == "15":
+        if choice == "17":
             print("Goodbye.")
             return
         action = actions.get(choice)
         if action is None:
-            print("Invalid option. Choose a number from 1 to 15.")
+            print("Invalid option. Choose a number from 1 to 17.")
             continue
 
         try:
             action(database)
         except ValueError as error:
             print(error)
+        except sqlite3.Error as error:
+            print(f"Database error: {error}")
 
 
 def main():

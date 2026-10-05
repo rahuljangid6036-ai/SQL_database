@@ -45,8 +45,28 @@ class Database:
             if "course_id" not in columns:
                 self._migrate_legacy_students()
 
-        self.connection.execute("PRAGMA user_version = 2")
+        self.connection.execute("PRAGMA user_version = 3")
+        self.create_history_table()
         self.connection.commit()
+
+    def create_history_table(self):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before creating tables.")
+
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS student_course_history (
+                history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id INTEGER NOT NULL,
+                old_course_id INTEGER NOT NULL,
+                new_course_id INTEGER NOT NULL,
+                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(student_id),
+                FOREIGN KEY (old_course_id) REFERENCES courses(course_id),
+                FOREIGN KEY (new_course_id) REFERENCES courses(course_id)
+            )
+            """
+        )
 
     def _create_students_table(self, table_name):
         self.connection.execute(
@@ -333,6 +353,99 @@ class Database:
             """
         ).fetchall()
         return [Course(*row) for row in rows]
+
+    def begin_transaction(self):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before starting a transaction.")
+        if self.connection.in_transaction:
+            raise sqlite3.ProgrammingError("A transaction is already active.")
+        self.connection.execute("BEGIN")
+
+    def commit(self):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before committing.")
+        self.connection.commit()
+
+    def rollback(self):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before rolling back.")
+        self.connection.rollback()
+
+    def transfer_student_course(self, student_id, new_course_id):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before transferring students.")
+        if isinstance(student_id, bool) or not isinstance(student_id, int):
+            raise ValueError("Student ID must be an integer.")
+        if isinstance(new_course_id, bool) or not isinstance(new_course_id, int):
+            raise ValueError("Course ID must be an integer.")
+
+        student = self.connection.execute(
+            "SELECT course_id FROM students WHERE student_id = ?", (student_id,)
+        ).fetchone()
+        if student is None:
+            raise ValueError("Student not found.")
+
+        old_course_id = student[0]
+        if self.get_course_by_id(new_course_id) is None:
+            raise ValueError("Invalid course ID.")
+        if old_course_id == new_course_id:
+            raise ValueError("Student is already enrolled in this course.")
+
+        try:
+            self.begin_transaction()
+            self.connection.execute(
+                "UPDATE students SET course_id = ? WHERE student_id = ?",
+                (new_course_id, student_id),
+            )
+            self.connection.execute(
+                """
+                INSERT INTO student_course_history
+                    (student_id, old_course_id, new_course_id)
+                VALUES (?, ?, ?)
+                """,
+                (student_id, old_course_id, new_course_id),
+            )
+            self.commit()
+        except Exception:
+            if self.connection.in_transaction:
+                self.rollback()
+            raise
+
+    def get_course_history(self):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before reading course history.")
+
+        return self.connection.execute(
+            """
+            SELECT h.history_id, h.student_id, s.name,
+                   old_course.course_name, new_course.course_name, h.changed_at
+            FROM student_course_history AS h
+            INNER JOIN students AS s ON s.student_id = h.student_id
+            INNER JOIN courses AS old_course ON old_course.course_id = h.old_course_id
+            INNER JOIN courses AS new_course ON new_course.course_id = h.new_course_id
+            ORDER BY h.history_id
+            """
+        ).fetchall()
+
+    def get_student_course_history(self, student_id):
+        if self.connection is None:
+            raise sqlite3.ProgrammingError("Connect to the database before reading course history.")
+        if isinstance(student_id, bool) or not isinstance(student_id, int):
+            raise ValueError("Student ID must be an integer.")
+
+        return self.connection.execute(
+            """
+            SELECT h.history_id, h.student_id, s.name,
+                   old_course.course_name, new_course.course_name, h.changed_at
+            FROM student_course_history AS h
+            INNER JOIN students AS s ON s.student_id = h.student_id
+            INNER JOIN courses AS old_course ON old_course.course_id = h.old_course_id
+            INNER JOIN courses AS new_course ON new_course.course_id = h.new_course_id
+            WHERE h.student_id = ?
+            ORDER BY h.history_id
+            """,
+            (student_id,),
+        ).fetchall()
 
     def get_total_students(self):
         return self._get_scalar("SELECT COUNT(*) FROM students")
